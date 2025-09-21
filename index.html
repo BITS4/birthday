@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>С Днём Рождения — Мини‑игра</title>
+  <style>
+    html, body { height: 100%; margin: 0; background:#0b0b10; color:#fff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Inter, Arial, sans-serif; }
+    #wrap { position: fixed; inset: 0; overflow: hidden; }
+    canvas { position:absolute; inset:0; width:100%; height:100%; display:block; }
+    .hud { position: absolute; left: 12px; top: 10px; display:flex; gap:8px; align-items:center; z-index: 3; }
+    .badge { background: rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.15); backdrop-filter: blur(6px); border-radius: 999px; padding: 6px 12px; font-weight: 700; letter-spacing:.2px; }
+    .hint { position:absolute; bottom: 14px; left:50%; transform:translateX(-50%); opacity:.8; font-size:14px; z-index:3; }
+    .overlay { position:absolute; inset:0; display:none; align-items:center; justify-content:center; flex-direction:column; gap:18px; text-align:center; z-index:5; }
+    .card { padding:28px 22px; border-radius:20px; border:1px solid rgba(255,255,255,.2); background: radial-gradient(1200px 800px at 50% 0%, rgba(255,215,0,.13), rgba(255,255,255,0) 60%), rgba(15,15,20,.88); box-shadow: 0 12px 50px rgba(255,215,0,.15), inset 0 0 0 1px rgba(255,255,255,.06); }
+    h1 { margin:0 0 6px; font-size: clamp(26px, 6vw, 46px); line-height:1.08; background: linear-gradient(180deg, #ffd56a 0%, #ffeaa7 40%, #f6c744 80%); -webkit-background-clip: text; background-clip: text; color: transparent; text-shadow: 0 2px 20px rgba(255,215,0,.25); }
+    p { margin:0; font-size: clamp(16px, 3.8vw, 22px); opacity:.95 }
+    .btn { margin-top:14px; cursor:pointer; border:none; border-radius:14px; padding:12px 18px; font-weight:700; color:#0b0b10; background: linear-gradient(180deg, #ffd86b, #ffb703); box-shadow: 0 8px 22px rgba(255,183,3,.35); }
+    .btn:active { transform: translateY(1px); }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game"></canvas>
+
+    <div class="hud">
+      <div class="badge" id="score">🎈 0</div>
+      <div class="badge" id="goal">Цель: 15</div>
+    </div>
+
+    <div class="hint">Нажимай / тапай по шарикам, чтобы лопнуть их 💥</div>
+
+    <div class="overlay" id="overlay">
+      <div class="card">
+        <h1>С ДНЁМ РОЖДЕНИЯ! 🎉</h1>
+        <p>Желаю здоровья и денег! 💪💰</p>
+        <button class="btn" id="again">Играть снова</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function(){
+      const canvas = document.getElementById('game');
+      const ctx = canvas.getContext('2d');
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      let W = 0, H = 0;
+      function resize(){
+        W = canvas.width  = Math.floor(innerWidth  * dpr);
+        H = canvas.height = Math.floor(innerHeight * dpr);
+        canvas.style.width = innerWidth + 'px';
+        canvas.style.height= innerHeight+ 'px';
+      }
+      addEventListener('resize', resize, {passive:true});
+      resize();
+
+      // ------- Game state -------
+      const rnd = (a,b)=> a + Math.random()*(b-a);
+      const PI = Math.PI;
+      const balloons = [];
+      const pops = [];     // particle bursts
+      const confetti = []; // celebration
+      const COLORS = ['#ffadad','#ffd6a5','#fdffb6','#caffbf','#9bf6ff','#bdb2ff','#ffc6ff','#f1c40f'];
+      const scoreEl = document.getElementById('score');
+      const goalEl  = document.getElementById('goal');
+      const overlay = document.getElementById('overlay');
+      const againBtn= document.getElementById('again');
+
+      let score = 0; const goal = 15; let won = false; let t = 0;
+
+      function spawnBalloon(){
+        const r = rnd(26, 46) * dpr; // radius
+        const x = rnd(r, W - r);
+        const y = H + r + rnd(0, 200*dpr);
+        const vy = -rnd(30, 70) * dpr / 60; // px per frame
+        const swayAmp = rnd(10, 40) * dpr, swayFreq = rnd(.4, 1.2) * 0.8;
+        const color = COLORS[Math.floor(Math.random()*COLORS.length)];
+        balloons.push({x,y,r,vy,swayAmp,swayFreq,phase:rnd(0, 2*PI),color,alive:true});
+      }
+
+      function spawnConfettiBurst(cx, cy){
+        for(let i=0;i<26;i++){
+          pops.push({
+            x: cx, y: cy,
+            vx: Math.cos((i/26)*2*PI)*rnd(1,4)*dpr,
+            vy: Math.sin((i/26)*2*PI)*rnd(1,4)*dpr,
+            life: rnd(24, 40),
+            color: COLORS[i%COLORS.length]
+          });
+        }
+      }
+
+      function celebrate(){
+        for(let i=0;i<220;i++){
+          confetti.push({
+            x: rnd(0, W), y: rnd(-H*0.5, 0),
+            vy: rnd(1.2, 3.2)*dpr, rot: rnd(0, 2*PI),
+            vr: rnd(-0.05, 0.05), w: rnd(6,12)*dpr, h: rnd(8,16)*dpr,
+            color: COLORS[Math.floor(Math.random()*COLORS.length)]
+          });
+        }
+      }
+
+      // Spawn loop
+      let spawnTimer = 0; const spawnEvery = 420; // ms
+
+      // Input
+      function onTap(e){
+        const rect = canvas.getBoundingClientRect();
+        const points = [];
+        if(e.touches){
+          for(let i=0;i<e.touches.length;i++){
+            const tx = (e.touches[i].clientX - rect.left) * dpr;
+            const ty = (e.touches[i].clientY - rect.top ) * dpr;
+            points.push({x:tx,y:ty});
+          }
+        } else {
+          const tx = (e.clientX - rect.left) * dpr;
+          const ty = (e.clientY - rect.top ) * dpr;
+          points.push({x:tx,y:ty});
+        }
+        for(const p of points){
+          for(const b of balloons){
+            if(!b.alive) continue;
+            const dx = p.x - b.x, dy = p.y - b.y;
+            if(dx*dx + dy*dy <= b.r*b.r){
+              b.alive = false; score++; scoreEl.textContent = '🎈 ' + score;
+              spawnConfettiBurst(b.x, b.y);
+              break;
+            }
+          }
+        }
+      }
+      canvas.addEventListener('pointerdown', onTap);
+      canvas.addEventListener('touchstart', onTap, {passive:true});
+
+      againBtn.addEventListener('click', ()=>{
+        // reset
+        balloons.length = 0; pops.length = 0; confetti.length = 0;
+        score = 0; scoreEl.textContent = '🎈 0'; won = false; overlay.style.display='none';
+      });
+
+      // Draw helpers
+      function drawBalloon(b){
+        const g = ctx.createLinearGradient(b.x, b.y-b.r, b.x, b.y+b.r);
+        g.addColorStop(0, '#ffffff22');
+        g.addColorStop(0.15, b.color);
+        g.addColorStop(1, b.color);
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.ellipse(b.x, b.y, b.r*0.85, b.r, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // string
+        ctx.strokeStyle = '#ffffff22';
+        ctx.lineWidth = Math.max(1, 1.5*dpr);
+        ctx.beginPath();
+        ctx.moveTo(b.x, b.y + b.r);
+        ctx.lineTo(b.x + Math.sin(t*0.03 + b.phase)*6*dpr, b.y + b.r + 40*dpr);
+        ctx.stroke();
+      }
+
+      function drawPop(p){
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = p.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 3.5*dpr, 0, 2*PI);
+        ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+      }
+
+      function drawConfetti(c){
+        ctx.save();
+        ctx.translate(c.x, c.y); ctx.rotate(c.rot);
+        ctx.fillStyle = c.color; ctx.fillRect(-c.w/2, -c.h/2, c.w, c.h);
+        ctx.restore();
+      }
+
+      // Main loop
+      let last = performance.now();
+      function loop(now){
+        const dt = Math.min(64, now - last); last = now; t += dt;
+        spawnTimer += dt;
+        if(!won && spawnTimer > spawnEvery){
+          spawnTimer = 0; if(balloons.length < 12) spawnBalloon();
+        }
+
+        // physics
+        for(const b of balloons){
+          if(!b.alive) continue;
+          b.y += b.vy * (dt/16);
+          b.x += Math.cos(t/1000 * b.swayFreq + b.phase) * (b.swayAmp/120) * (dt/16);
+          if(b.y + b.r < -50*dpr) b.alive = false; // flew away
+        }
+        // cleanup dead
+        for(let i=balloons.length-1;i>=0;i--) if(!balloons[i].alive) balloons.splice(i,1);
+
+        for(const p of pops){ p.x += p.vx; p.y += p.vy; p.vy += 0.05*dpr; p.life -= 1; }
+        for(let i=pops.length-1;i>=0;i--) if(pops[i].life <= 0) pops.splice(i,1);
+
+        if(score >= goal && !won){ won = true; celebrate(); overlay.style.display='flex'; }
+        for(const c of confetti){ c.y += c.vy; c.rot += c.vr; if(c.y > H + 40*dpr) c.y = -rnd(20, H*0.6); }
+
+        // draw
+        ctx.clearRect(0,0,W,H);
+        // subtle background stars
+        ctx.fillStyle = '#ffffff08';
+        for(let i=0;i<40;i++){
+          const x = (i*97 % W), y = (i*163 % H); ctx.fillRect(x, y, 2*dpr, 2*dpr);
+        }
+        // balloons
+        for(const b of balloons) drawBalloon(b);
+        // pops
+        for(const p of pops) drawPop(p);
+        // confetti (celebration)
+        for(const c of confetti) drawConfetti(c);
+
+        requestAnimationFrame(loop);
+      }
+      requestAnimationFrame(loop);
+
+    })();
+  </script>
+</body>
+</html>
